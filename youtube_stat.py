@@ -27,6 +27,7 @@ class YTstats:
     def get_channel_video_data(self):
         # 1) get video ids
         channel_videos = self._get_channel_videos(limit=50)
+        print(len(channel_videos))
 
         # 2)  get video statistics, TODO: next video
 
@@ -34,10 +35,39 @@ class YTstats:
         url = f'https://www.googleapis.com/youtube/v3/search?key={self.api_key}&channelId&id={self.channel_id}&part=id&order=date'
         if limit is not None and isinstance(limit, int):
             url += "&maxResults=" + str(limit)
-        print(url)
+        
+        vid, npt = self._get_channel_videos_per_page(url)
+        idx = 0
+        while(npt is not None and idx < 10):
+            nexturl = url + "&pageToken=" + npt
+            self._get_channel_videos_per_page(nexturl)
+            next_vid, npt = self._get_channel_videos_per_page(nexturl)
+            vid.update(next_vid)
+            vid.update(next_vid)
+            idx += 1
 
+        return vid
 
+    def _get_channel_videos_per_page(self,url):
+        json_url = requests.get(url)
+        data = json.loads(json_url.text)
+        channel_videos = dict()
+        if 'items' not in data:
+            return channel_videos, None
 
+        item_data = data['items']
+        nextPageToken = data.get("nextPageToken", None)
+
+        for item in item_data:
+            try:
+                kind = item['id']['kind']
+                if kind == 'youtube#video':
+                    video_id = item['id']['videoId']
+                    channel_videos[video_id] = dict()
+            except KeyError:
+                print("error")
+        
+        return channel_videos, nextPageToken
 
     def dump(self):
         if self.channel_statistics is None:
