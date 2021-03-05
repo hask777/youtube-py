@@ -1,7 +1,7 @@
-
 import json
 import requests
 from tqdm import tqdm
+
 
 class YTstats:
 
@@ -11,37 +11,49 @@ class YTstats:
         self.channel_statistics = None
         self.video_data = None
 
+    def extract_all(self):
+        self.get_channel_statistics()
+        self.get_channel_video_data()
+
     def get_channel_statistics(self):
+        """Extract the channel statistics"""
+        print('get channel statistics...')
         url = f'https://www.googleapis.com/youtube/v3/channels?part=statistics&id={self.channel_id}&key={self.api_key}'
-        # print(url)
+        pbar = tqdm(total=1)
+        
         json_url = requests.get(url)
         data = json.loads(json_url.text)
-        # print(data)
         try:
-            data = data["items"][0]["statistics"]
-        except:
-           data = None 
+            data = data['items'][0]['statistics']
+        except KeyError:
+            print('Could not get channel statistics')
+            data = {}
 
         self.channel_statistics = data
+        pbar.update()
+        pbar.close()
         return data
 
     def get_channel_video_data(self):
-        # 1) get video ids
-        channel_videos = self._get_channel_videos(limit=50)
-        print(len(channel_videos))
-        print(channel_videos)
+        "Extract all video information of the channel"
+        print('get video data...')
+        channel_videos, channel_playlists = self._get_channel_content(limit=50)
 
-        # 2)  get video statistics, TODO: next video
-        parts = ['snippet', 'video_id', 'part']
+        parts=["snippet", "statistics","contentDetails", "topicDetails"]
         for video_id in tqdm(channel_videos):
             for part in parts:
                 data = self._get_single_video_data(video_id, part)
-                channel_videos[video_id].uodate(data)
+                channel_videos[video_id].update(data)
 
         self.video_data = channel_videos
         return channel_videos
-             
+
     def _get_single_video_data(self, video_id, part):
+        """
+        Extract further information for a single video
+        parts can be: 'snippet', 'statistics', 'contentDetails', 'topicDetails'
+        """
+
         url = f"https://www.googleapis.com/youtube/v3/videos?part={part}&id={video_id}&key={self.api_key}"
         json_url = requests.get(url)
         data = json.loads(json_url.text)
@@ -52,55 +64,74 @@ class YTstats:
             data = dict()
         return data
 
-    def _get_channel_videos(self, limit=None):
-        url = f'https://www.googleapis.com/youtube/v3/search?key={self.api_key}&channelId&id={self.channel_id}&part=id&order=date'
+    def _get_channel_content(self, limit=None, check_all_pages=True):
+        """
+        Extract all videos and playlists, can check all available search pages
+        channel_videos = videoId: title, publishedAt
+        channel_playlists = playlistId: title, publishedAt
+        return channel_videos, channel_playlists
+        """
+        url = f"https://www.googleapis.com/youtube/v3/search?key={self.api_key}&channelId={self.channel_id}&part=snippet,id&order=date"
         if limit is not None and isinstance(limit, int):
             url += "&maxResults=" + str(limit)
-        
-        vid, npt = self._get_channel_videos_per_page(url)
+
+        vid, pl, npt = self._get_channel_content_per_page(url)
         idx = 0
-        while(npt is not None and idx < 10):
+        while(check_all_pages and npt is not None and idx < 10):
             nexturl = url + "&pageToken=" + npt
-            self._get_channel_videos_per_page(nexturl)
-            next_vid, npt = self._get_channel_videos_per_page(nexturl)
+            next_vid, next_pl, npt = self._get_channel_content_per_page(nexturl)
             vid.update(next_vid)
-            vid.update(next_vid)
+            pl.update(next_pl)
             idx += 1
 
-        return vid
+        return vid, pl
 
-    def _get_channel_videos_per_page(self,url):
+    def _get_channel_content_per_page(self, url):
+        """
+        Extract all videos and playlists per page
+        return channel_videos, channel_playlists, nextPageToken
+        """
         json_url = requests.get(url)
         data = json.loads(json_url.text)
         channel_videos = dict()
+        channel_playlists = dict()
         if 'items' not in data:
-            return channel_videos, None
+            print('Error! Could not get correct channel data!\n', data)
+            return channel_videos, channel_videos, None
 
-        item_data = data['items']
         nextPageToken = data.get("nextPageToken", None)
 
+        item_data = data['items']
         for item in item_data:
             try:
                 kind = item['id']['kind']
+                published_at = item['snippet']['publishedAt']
+                title = item['snippet']['title']
                 if kind == 'youtube#video':
                     video_id = item['id']['videoId']
-                    channel_videos[video_id] = dict()
-            except KeyError:
-                print("error")
-        
-        return channel_videos, nextPageToken
+                    channel_videos[video_id] = {'publishedAt': published_at, 'title': title}
+                elif kind == 'youtube#playlist':
+                    playlist_id = item['id']['playlistId']
+                    channel_playlists[playlist_id] = {'publishedAt': published_at, 'title': title}
+            except KeyError as e:
+                print('Error! Could not extract data from item:\n', item)
+
+        return channel_videos, channel_playlists, nextPageToken
 
     def dump(self):
+        """Dumps channel statistics and video data in a single json file"""
         if self.channel_statistics is None or self.video_data is None:
-            print('data is None')
+            print('data is missing!\nCall get_channel_statistics() and get_channel_video_data() first!')
             return
 
-        fused_data = {self.channel_id:{"channel_statistics": self.channel_statistics, "video_data": self.video_data}}
+        fused_data = {self.channel_id: {"channel_statistics": self.channel_statistics,
+                              "video_data": self.video_data}}
 
         channel_title = self.video_data.popitem()[1].get('channelTitle', self.channel_id)
         channel_title = channel_title.replace(" ", "_").lower()
-        file_name = channel_title + '.json'
-        with open(file_name, 'w') as f:
+        filename = channel_title + '.json'
+        with open(filename, 'w') as f:
             json.dump(fused_data, f, indent=4)
+        
+        print('file dumped to', filename)
 
-        print('file_dumped')
